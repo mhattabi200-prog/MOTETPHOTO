@@ -38,11 +38,16 @@ USED_FILE = ROOT / "used.json"
 
 W, H = 1080, 1920
 VOICE = os.getenv("TTS_VOICE", "ar-SA-HamedNeural")
-GEMINI_MODELS = [
-    os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
+GEMINI_PREFERRED = [
+    m for m in (
+        os.getenv("GEMINI_MODEL", ""),
+        "gemini-flash-latest",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-3-flash-preview",
+    ) if m
 ]
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 LETTERS = list("أبتثجحخدذرزسشصضطظعغفقكلمنهوي")
 CATEGORIES = [
@@ -99,14 +104,49 @@ def run(cmd):
 
 
 # ---------------------------------------------------------------- Gemini
-def gemini_json(prompt: str):
-    key = os.environ["GEMINI_API_KEY"]
+def discover_models(key):
+    """يسأل Google عن النماذج المتاحة فعلاً (حتى لا يتعطل المشروع عند إيقاف نموذج قديم)."""
+    try:
+        r = requests.get(f"{GEMINI_BASE}/models?pageSize=200",
+                         headers={"x-goog-api-key": key}, timeout=20)
+        r.raise_for_status()
+        names = []
+        for m in r.json().get("models", []):
+            n = m["name"].split("/", 1)[1]
+            if "generateContent" not in m.get("supportedGenerationMethods", []):
+                continue
+            if "flash" not in n or not n.startswith("gemini"):
+                continue
+            if any(x in n for x in ("image", "tts", "audio", "live", "embedding",
+                                    "robotics", "computer-use", "thinking")):
+                continue
+            names.append(n)
+
+        def rank(n):
+            v = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
+            return ("lite" in n, "preview" in n or "exp" in n,
+                    -(float(v.group(1)) if v else 0), n)
+
+        found = sorted(names, key=rank)
+        log(f"نماذج متاحة: {found[:8]}")
+        return found
+    except Exception as e:  # noqa: BLE001
+        log(f"تعذّر جلب قائمة النماذج: {e}")
+        return []
+
+
+_DEAD_MODELS = set()
+
+
+def _try_models(key, models, prompt):
     last = None
-    for model in GEMINI_MODELS:
-        for _ in range(2):
+    for model in models:
+        if model in _DEAD_MODELS:
+            continue
+        for attempt in range(2):
             try:
                 r = requests.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                    f"{GEMINI_BASE}/models/{model}:generateContent",
                     headers={"x-goog-api-key": key, "Content-Type": "application/json"},
                     json={
                         "contents": [{"parts": [{"text": prompt}]}],
@@ -117,15 +157,36 @@ def gemini_json(prompt: str):
                     },
                     timeout=40,
                 )
+                if r.status_code == 404:           # النموذج غير موجود/أُوقف: لا فائدة من التكرار
+                    _DEAD_MODELS.add(model)
+                    last = f"{model}: 404 (غير متاح)"
+                    log(last)
+                    break
+                if r.status_code == 429:           # تجاوز الحصة المؤقتة
+                    last = f"{model}: 429 {r.text[:150]}"
+                    log(last)
+                    time.sleep(8)
+                    continue
                 r.raise_for_status()
                 text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
                 text = re.sub(r"^```(?:json)?|```$", "", text.strip()).strip()
+                log(f"Gemini ✓ ({model})")
                 return json.loads(text)
             except Exception as e:  # noqa: BLE001
-                last = e
-                log(f"Gemini {model}: {e}")
+                last = f"{model}: {e}"
+                log(last)
                 time.sleep(2)
-    raise RuntimeError(f"فشل Gemini: {last}")
+    raise RuntimeError(last or "لا توجد نماذج")
+
+
+def gemini_json(prompt: str):
+    key = os.environ["GEMINI_API_KEY"]
+    try:
+        return _try_models(key, GEMINI_PREFERRED, prompt)
+    except RuntimeError as first:
+        log(f"فشلت النماذج المفضلة ({first})، البحث عن نماذج متاحة...")
+        extra = [m for m in discover_models(key) if m not in GEMINI_PREFERRED]
+        return _try_models(key, extra[:5], prompt)
 
 
 def is_emoji(s: str) -> bool:
