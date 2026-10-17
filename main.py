@@ -26,6 +26,13 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+T0 = time.time()
+
+
+def log(msg):
+    print(f"[{time.time() - T0:6.1f}s] {msg}", flush=True)
+
+
 ROOT = Path(__file__).parent
 USED_FILE = ROOT / "used.json"
 
@@ -108,7 +115,7 @@ def gemini_json(prompt: str):
                             "temperature": 1.0,
                         },
                     },
-                    timeout=90,
+                    timeout=40,
                 )
                 r.raise_for_status()
                 text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
@@ -116,7 +123,8 @@ def gemini_json(prompt: str):
                 return json.loads(text)
             except Exception as e:  # noqa: BLE001
                 last = e
-                time.sleep(4)
+                log(f"Gemini {model}: {e}")
+                time.sleep(2)
     raise RuntimeError(f"فشل Gemini: {last}")
 
 
@@ -173,7 +181,7 @@ def emoji_image(e: str) -> Image.Image:
         url = ("https://raw.githubusercontent.com/googlefonts/noto-emoji/main/"
                f"png/512/emoji_u{name}.png")
         try:
-            r = requests.get(url, timeout=30)
+            r = requests.get(url, timeout=15)
             if r.status_code == 200:
                 return Image.open(io.BytesIO(r.content)).convert("RGBA")
         except requests.RequestException:
@@ -291,7 +299,7 @@ def make_frames(word, explanation, emoji_img, outdir):
 
 # ---------------------------------------------------------------- الصوت والفيديو
 async def _edge(text, out):
-    await edge_tts.Communicate(text, VOICE, rate="-8%").save(out)
+    await asyncio.wait_for(edge_tts.Communicate(text, VOICE, rate="-8%").save(out), 40)
 
 
 def tts(text: str, out: str):
@@ -301,8 +309,8 @@ def tts(text: str, out: str):
             if os.path.getsize(out) > 1000:
                 return
         except Exception as e:  # noqa: BLE001
-            print("edge-tts:", e)
-            time.sleep(4)
+            log(f"edge-tts: {e!r}")
+            time.sleep(2)
     print("استعمال gTTS كبديل")
     from gtts import gTTS
 
@@ -318,10 +326,12 @@ def duration(path: str) -> float:
 def build_video(word, explanation, emoji_img, out_path):
     tmp = Path(tempfile.mkdtemp())
     make_frames(word, explanation, emoji_img, tmp)
+    log("تم رسم الصور، بدء الصوت...")
 
     tts(word, str(tmp / "w.mp3"))
     tts(explanation, str(tmp / "e.mp3"))
     dw, de = duration(str(tmp / "w.mp3")), duration(str(tmp / "e.mp3"))
+    log("تم الصوت، بدء ffmpeg...")
 
     gap, tail = 2.5, 0.9
     fmt = "aformat=sample_rates=24000:channel_layouts=mono"
@@ -352,7 +362,7 @@ def build_video(word, explanation, emoji_img, out_path):
         "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart",
         out_path,
     ])
-    print(f"مدة الفيديو ≈ {t_a + t_b + t_c:.1f} ثانية")
+    log(f"انتهى ffmpeg، مدة الفيديو ≈ {t_a + t_b + t_c:.1f} ثانية")
 
 
 # ---------------------------------------------------------------- يوتيوب
@@ -394,9 +404,11 @@ def main():
     built = None
     for _ in range(4):
         try:
+            log("طلب كلمة من Gemini...")
             item = pick_new_word(used)
-            print("الكلمة:", item["word"], item["emoji"])
+            log(f"الكلمة: {item['word']} {item['emoji']}")
             emoji_img = emoji_image(item["emoji"])
+            log("تم تنزيل الملصق، بدء تركيب الفيديو...")
             build_video(item["word"], item["explanation"], emoji_img, out_path)
             built = item
             break
@@ -413,8 +425,9 @@ def main():
         "#shorts #تعلم_العربية #كلمة_اليوم #اللغة_العربية"
     )
     tags = ["shorts", "تعلم العربية", "معنى كلمة", word, "اللغة العربية", "كلمة اليوم"]
+    log("بدء الرفع إلى يوتيوب...")
     vid = upload_youtube(out_path, title, desc, tags)
-    print("تم الرفع: https://youtu.be/" + vid)
+    log("تم الرفع: https://youtu.be/" + vid)
 
     # تسجيل الكلمة فوراً بعد نجاح الرفع
     used.append(word)
