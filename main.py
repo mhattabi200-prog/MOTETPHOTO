@@ -24,7 +24,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, features
 
 T0 = time.time()
 
@@ -295,7 +295,15 @@ def find_font() -> str:
     raise RuntimeError("لم يُعثر على خط عربي")
 
 
+# إن وُجد محرك raqm (الحال في GitHub) فهو يرتّب الحروف العربية ويصلها بنفسه،
+# فنمرّر له النص المنطقي كما هو. وإلا نستعمل arabic_reshaper + bidi يدوياً.
+HAS_RAQM = features.check("raqm") and features.check("fribidi")
+KW = {"direction": "rtl", "language": "ar"} if HAS_RAQM else {}
+
+
 def shape(text: str) -> str:
+    if HAS_RAQM:
+        return text
     return get_display(arabic_reshaper.reshape(text))
 
 
@@ -303,7 +311,7 @@ def wrap(draw, text, font, max_w):
     lines, cur = [], ""
     for w in text.split():
         trial = (cur + " " + w).strip()
-        if draw.textlength(shape(trial), font=font) <= max_w:
+        if draw.textlength(shape(trial), font=font, **KW) <= max_w:
             cur = trial
         else:
             if cur:
@@ -322,7 +330,7 @@ def draw_text(img, text, y, size, fill, max_w=W - 140, max_lines=1, stroke=0, mi
     while True:
         font = ImageFont.truetype(FONT_PATH, size)
         lines = wrap(draw, text, font, max_w)
-        widest = max(draw.textlength(shape(l), font=font) for l in lines)
+        widest = max(draw.textlength(shape(l), font=font, **KW) for l in lines)
         if (len(lines) <= max_lines and widest <= max_w) or size <= min_size:
             break
         size -= 4
@@ -330,7 +338,7 @@ def draw_text(img, text, y, size, fill, max_w=W - 140, max_lines=1, stroke=0, mi
     top = y - (len(lines) * lh) / 2 + lh / 2
     for i, line in enumerate(lines):
         draw.text((W / 2, top + i * lh), shape(line), font=font, fill=fill,
-                  anchor="mm", stroke_width=stroke, stroke_fill=(0, 0, 0))
+                  anchor="mm", stroke_width=stroke, stroke_fill=(0, 0, 0), **KW)
 
 
 def gradient(c1, c2):
@@ -463,6 +471,7 @@ def upload_youtube(path, title, description, tags):
 
 # ---------------------------------------------------------------- الرئيسي
 def main():
+    log(f"raqm={HAS_RAQM}")
     used = load_used()
     out_path = str(ROOT / "out.mp4")
 
