@@ -13,7 +13,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +23,9 @@ jobs:
           cache: pip
 
       - name: Install system packages
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto-core fonts-noto-color-emoji
+        run: |
+          command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg; }
+          fc-list | grep -qi amiri || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends fonts-hosny-amiri; }
 
       - name: Install python packages
         run: pip install -r requirements.txt
