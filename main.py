@@ -41,10 +41,10 @@ VOICE = os.getenv("TTS_VOICE", "ar-SA-HamedNeural")
 GEMINI_PREFERRED = [
     m for m in (
         os.getenv("GEMINI_MODEL", ""),
-        "gemini-flash-latest",
-        "gemini-3.5-flash",
         "gemini-3.1-flash-lite",
+        "gemini-3.5-flash",
         "gemini-3-flash-preview",
+        "gemini-flash-latest",
     ) if m
 ]
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -155,7 +155,7 @@ def _try_models(key, models, prompt):
                             "temperature": 1.0,
                         },
                     },
-                    timeout=40,
+                    timeout=30,
                 )
                 if r.status_code == 404:           # النموذج غير موجود/أُوقف: لا فائدة من التكرار
                     _DEAD_MODELS.add(model)
@@ -172,6 +172,10 @@ def _try_models(key, models, prompt):
                 text = re.sub(r"^```(?:json)?|```$", "", text.strip()).strip()
                 log(f"Gemini ✓ ({model})")
                 return json.loads(text)
+            except requests.Timeout:               # بطيء: انتقل فوراً إلى نموذج آخر
+                last = f"{model}: timeout"
+                log(last)
+                break
             except Exception as e:  # noqa: BLE001
                 last = f"{model}: {e}"
                 log(last)
